@@ -1,0 +1,1138 @@
+<script>
+(function() {
+  'use strict';
+
+  if (window.__ARMITEC_FORM_LOADED__) {
+    console.warn('[FORM] Script already loaded');
+    return;
+  }
+  window.__ARMITEC_FORM_LOADED__ = true;
+
+  // ═══════════════════════════════════════════════════════════════
+  // VARIABLES GLOBALES
+  // ═══════════════════════════════════════════════════════════════
+
+  var CURRENT_SCHEMA = null;
+  var GAMME_SCHEMA = null;
+  var GAMME_INJECTED = false;
+  var AVAILABLE_GAMMES = [];
+  var SELECTED_GAMME_KEY = '';
+  var pieceCounter = 0;
+  var CURRENT_PHASE = 'pre';
+  var isSubmitting = false;
+
+  // ═══════════════════════════════════════════════════════════════
+  // INITIALISATION
+  // ═══════════════════════════════════════════════════════════════
+
+  document.addEventListener('DOMContentLoaded', function() {
+    console.log('[FORM] ARMITEC Form v5.4.3 - Initialisation');
+
+    var form = document.getElementById('interventionForm');
+    if (form) {
+      form.setAttribute('novalidate', 'novalidate');
+      form.addEventListener('submit', onPrimaryAction);
+    }
+
+    var addPieceBtn = document.getElementById('addPieceBtn');
+    if (addPieceBtn) {
+      addPieceBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        addPiece();
+      });
+    }
+
+    var backBtn = document.getElementById('backBtn');
+    if (backBtn) {
+      backBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        goBack();
+      });
+    }
+
+    loadFormSchema();
+
+    if (window.PREFILL_DATA) {
+      setTimeout(function() {
+        applyPrefill(window.PREFILL_DATA);
+      }, 800);
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // CHARGEMENT SCHEMA FORMULAIRE
+  // ═══════════════════════════════════════════════════════════════
+
+  function loadFormSchema() {
+    if (!window.google || !google.script) {
+      console.warn('[FORM] Demo mode - loading demo schema');
+      loadDemoSchema();
+      return;
+    }
+
+    console.log('[FORM] Loading form schema from server');
+
+    google.script.run
+      .withSuccessHandler(function(schema) {
+        console.log('[FORM] Schema received:', schema);
+        CURRENT_SCHEMA = schema || { fields: [] };
+        renderFormFromSchema();
+      })
+      .withFailureHandler(function(err) {
+        console.error('[FORM] Error loading schema:', err);
+        showError('Erreur de chargement du formulaire');
+        loadDemoSchema();
+      })
+      .getFormSchema();
+  }
+
+  function loadDemoSchema() {
+    console.log('[FORM] Loading demo schema');
+    CURRENT_SCHEMA = {
+      fields: [
+        { name: 'date_intervention', label: 'Date intervention', type: 'date', required: true, phase: 'pre', bloc: 'IDENTIFICATION', ordre: 1 },
+        { name: 'site', label: 'Site', type: 'select', required: true, phase: 'pre', bloc: 'IDENTIFICATION', options: ['Site A', 'Site B'], ordre: 2 },
+        { name: 'machine_id', label: 'Machine', type: 'select', required: true, phase: 'pre', bloc: 'IDENTIFICATION', options: ['M001', 'M075'], ordre: 3 },
+        { name: 'technicien', label: 'Technicien', type: 'text', required: true, phase: 'pre', bloc: 'IDENTIFICATION', ordre: 4 },
+        { name: 'type_maintenance', label: 'Type maintenance', type: 'select', required: true, phase: 'pre', bloc: 'CLASSIFICATION', options: ['preventif', 'correctif'], ordre: 5 },
+        { name: 'operations_realisees', label: 'Operations realisees', type: 'textarea', required: true, phase: 'metier', bloc: 'CONTENU_METIER', display_if: 'type_maintenance=correctif', ordre: 10 },
+        { name: 'photos', label: 'Photos', type: 'file', required: false, phase: 'post', bloc: 'JUSTIFICATIFS', multiple: true, accept: 'image/*', ordre: 30 },
+        { name: 'temps_passe', label: 'Temps passe (HH:MM)', type: 'time', required: true, phase: 'post', bloc: 'TEMPS_RESSOURCES', ordre: 40 }
+      ]
+    };
+    renderFormFromSchema();
+  }
+
+  function renderFormFromSchema() {
+    console.log('[FORM] Rendering form from schema');
+    var container = document.getElementById('formContent');
+    if (!container) {
+      console.error('[FORM] formContent container not found');
+      return;
+    }
+
+    container.innerHTML = '';
+
+    var phases = ['pre', 'metier', 'post'];
+
+    phases.forEach(function(phase) {
+      var phaseFields = CURRENT_SCHEMA.fields.filter(function(f) {
+        return (f.phase || 'pre') === phase;
+      });
+
+      if (phaseFields.length === 0) return;
+
+      var blocGroups = {};
+      phaseFields.forEach(function(field) {
+        var bloc = field.bloc || 'AUTRES';
+        if (!blocGroups[bloc]) blocGroups[bloc] = [];
+        blocGroups[bloc].push(field);
+      });
+
+      Object.keys(blocGroups).forEach(function(blocName) {
+        var blocSection = document.createElement('div');
+        blocSection.className = 'form-block';
+        blocSection.dataset.phase = phase;
+        if (phase === 'metier' && blocName === 'CONTENU_METIER') {
+          blocSection.dataset.generatedBy = 'metier';
+        }
+
+        var blocTitle = document.createElement('h2');
+        blocTitle.textContent = formatBlocName(blocName);
+        blocSection.appendChild(blocTitle);
+
+        blocGroups[blocName].forEach(function(field) {
+          var group = createFieldElement(field);
+          group.dataset.phase = phase;
+          if (field.display_if) {
+            group.dataset.displayIf = field.display_if;
+          }
+          blocSection.appendChild(group);
+        });
+
+        container.appendChild(blocSection);
+      });
+    });
+
+    if (typeof window.initIdentificationDynamicLists === 'function') {
+      window.initIdentificationDynamicLists();
+    }
+
+    updatePhaseIndicator();
+    updateVisibility();
+    updateButtonLabels();
+    attachChangeListeners();
+    setupGammeSelector();
+  }
+
+  function formatBlocName(bloc) {
+    return bloc.replace(/_/g, ' ');
+  }
+
+  function createFieldElement(field) {
+    var group = document.createElement('div');
+    group.className = 'form-group';
+
+    var label = document.createElement('label');
+    label.textContent = field.label || field.name;
+    if (field.required) label.classList.add('required');
+    group.appendChild(label);
+
+    var input;
+    var fieldType = field.type || 'text';
+
+    if (fieldType === 'select') {
+      input = document.createElement('select');
+      input.name = field.name;
+      input.id = field.name;
+
+      var placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '-- Selectionner --';
+      input.appendChild(placeholder);
+
+      if (field.name !== 'machine_id' && field.name !== 'site') {
+        if (field.options && Array.isArray(field.options)) {
+          field.options.forEach(function(opt) {
+            var option = document.createElement('option');
+            option.value = opt;
+            option.textContent = opt;
+            input.appendChild(option);
+          });
+        }
+      }
+    } else if (fieldType === 'textarea') {
+      input = document.createElement('textarea');
+      input.name = field.name;
+      input.id = field.name;
+      input.rows = field.rows || 4;
+    } else if (fieldType === 'file') {
+      input = document.createElement('input');
+      input.type = 'file';
+      input.name = field.name;
+      input.id = field.name;
+      input.accept = field.accept || 'image/*';
+      if (field.multiple) input.multiple = true;
+    } else {
+      input = document.createElement('input');
+      input.type = fieldType;
+      input.name = field.name;
+      input.id = field.name;
+    }
+
+    if (input) {
+      input.dataset.requiredOriginal = field.required ? '1' : '0';
+      if (field.required) input.required = true;
+      group.appendChild(input);
+    }
+
+    return group;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // GESTION VISIBILITÉ ET VALIDATION
+  // ═══════════════════════════════════════════════════════════════
+
+  function setGroupVisible(group, visible) {
+    group.style.display = visible ? '' : 'none';
+
+    var inputs = group.querySelectorAll('input, select, textarea');
+    inputs.forEach(function(input) {
+      if (!visible) {
+        input.required = false;
+        input.disabled = true;
+      } else {
+        input.disabled = false;
+        input.required = (input.dataset.requiredOriginal === '1');
+      }
+    });
+  }
+
+  function updateVisibility() {
+    var type = getFieldValue('type_maintenance') || '';
+    type = type.toString().toLowerCase();
+
+    var allBlocks = document.querySelectorAll('#formContent .form-block');
+    allBlocks.forEach(function(block) {
+      var phase = block.dataset.phase || 'pre';
+      block.style.display = (phase === CURRENT_PHASE) ? '' : 'none';
+    });
+
+    var allGroups = document.querySelectorAll('#formContent .form-group');
+    allGroups.forEach(function(group) {
+      var phase = group.dataset.phase || 'pre';
+
+      if (phase !== CURRENT_PHASE) {
+        setGroupVisible(group, false);
+        return;
+      }
+
+      var displayIf = group.dataset.displayIf;
+      if (displayIf) {
+        var shouldShow = evaluateDisplayIf(displayIf);
+        setGroupVisible(group, shouldShow);
+      } else {
+        setGroupVisible(group, true);
+      }
+    });
+
+    var piecesBlock = document.getElementById('piecesBlock');
+    if (piecesBlock) {
+      piecesBlock.style.display = (CURRENT_PHASE === 'post') ? '' : 'none';
+      if (piecesBlock.style.display === 'none') {
+        var piecesInputs = piecesBlock.querySelectorAll('input, select, textarea');
+        piecesInputs.forEach(function(i) {
+          i.required = false;
+          i.disabled = true;
+        });
+      } else {
+        var piecesInputs2 = piecesBlock.querySelectorAll('input, select, textarea');
+        piecesInputs2.forEach(function(i) {
+          i.disabled = false;
+        });
+      }
+    }
+
+    updatePhaseIndicator();
+    updateButtonLabels();
+  }
+
+  function evaluateDisplayIf(displayIf) {
+    if (!displayIf) return true;
+
+    var parts = displayIf.split('=');
+    if (parts.length !== 2) return true;
+
+    var fieldName = parts[0].trim();
+    var expectedValues = parts[1].split('|').map(function(v) { return v.trim().toLowerCase(); });
+    var currentValue = getFieldValue(fieldName);
+
+    if (currentValue === null || currentValue === undefined) return false;
+
+    return expectedValues.indexOf(currentValue.toString().toLowerCase()) !== -1;
+  }
+
+  function getFieldValue(name) {
+    var elements = document.getElementsByName(name);
+    if (!elements || elements.length === 0) {
+      var el = document.getElementById(name);
+      return el ? el.value : null;
+    }
+
+    var first = elements[0];
+
+    if (first.type === 'radio') {
+      for (var i = 0; i < elements.length; i++) {
+        if (elements[i].checked) return elements[i].value;
+      }
+      return '';
+    }
+
+    return first.value;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // GESTION DES PHASES
+  // ═══════════════════════════════════════════════════════════════
+
+  function updatePhaseIndicator() {
+    var phases = ['pre', 'metier', 'post'];
+    var currentIndex = phases.indexOf(CURRENT_PHASE);
+
+    phases.forEach(function(phase, index) {
+      var el = document.getElementById('phase-' + phase);
+      if (!el) return;
+
+      el.classList.remove('active', 'completed');
+
+      if (index < currentIndex) {
+        el.classList.add('completed');
+      } else if (index === currentIndex) {
+        el.classList.add('active');
+      }
+    });
+  }
+
+  function updateButtonLabels() {
+    var submitBtn = document.getElementById('submitBtn');
+    var backBtn = document.getElementById('backBtn');
+
+    if (!submitBtn) return;
+
+    if (CURRENT_PHASE === 'pre') {
+      submitBtn.textContent = 'Continuer vers intervention';
+      if (backBtn) backBtn.style.display = 'none';
+    } else if (CURRENT_PHASE === 'metier') {
+      submitBtn.textContent = 'Continuer vers cloture';
+      if (backBtn) backBtn.style.display = '';
+    } else {
+      submitBtn.textContent = 'Enregistrer intervention';
+      if (backBtn) backBtn.style.display = '';
+    }
+  }
+
+  function onPrimaryAction(e) {
+    if (e) e.preventDefault();
+    if (isSubmitting) {
+      console.log('[FORM] Submission already in progress');
+      return;
+    }
+
+    updateVisibility();
+
+    if (CURRENT_PHASE === 'pre') {
+      handlePrePhase();
+    } else if (CURRENT_PHASE === 'metier') {
+      handleMetierPhase();
+    } else {
+      handlePostPhase();
+    }
+  }
+
+  function handlePrePhase() {
+    console.log('[FORM] Handling pre phase');
+
+    var validation = validatePhase('pre');
+    if (!validation.valid) {
+      showError('Champs obligatoires manquants: ' + validation.missing.join(', '));
+      return;
+    }
+
+    var type = getFieldValue('type_maintenance') || '';
+    type = type.toLowerCase();
+
+    console.log('[FORM] Type maintenance:', type);
+
+    if (type === 'preventif' || type === 'reglementaire') {
+      var selectedGamme = getFieldValue('selected_gamme_key');
+      console.log('[FORM] Selected gamme:', selectedGamme);
+
+      if (!selectedGamme) {
+        showError('Veuillez selectionner une gamme');
+        return;
+      }
+
+      SELECTED_GAMME_KEY = selectedGamme;
+
+      if (!GAMME_INJECTED) {
+        console.log('[FORM] Loading gamme schema for:', SELECTED_GAMME_KEY);
+        loadGammeSchema();
+        return;
+      }
+    }
+
+    transitionToPhase('metier');
+  }
+
+  function handleMetierPhase() {
+    console.log('[FORM] Handling metier phase');
+
+    var validation = validatePhase('metier');
+    if (!validation.valid) {
+      showError('Champs obligatoires manquants: ' + validation.missing.join(', '));
+      return;
+    }
+
+    transitionToPhase('post');
+  }
+
+  function handlePostPhase() {
+    console.log('[FORM] Handling post phase');
+
+    var validation = validatePhase('post');
+    if (!validation.valid) {
+      showError('Champs obligatoires manquants: ' + validation.missing.join(', '));
+      return;
+    }
+
+    performFinalSubmit();
+  }
+
+  function transitionToPhase(phase) {
+    console.log('[FORM] Transitioning to phase:', phase);
+    CURRENT_PHASE = phase;
+    lockIdentifiers(phase !== 'pre');
+    updateVisibility();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    showSuccess('Phase ' + phase + ' activee');
+  }
+
+  function goBack() {
+    if (CURRENT_PHASE === 'metier') {
+      GAMME_INJECTED = false;
+      GAMME_SCHEMA = null;
+      
+      var gammeBlocks = document.querySelectorAll('[data-generated-by="gamme"]');
+      gammeBlocks.forEach(function(block) {
+        block.remove();
+      });
+      
+      transitionToPhase('pre');
+    } else if (CURRENT_PHASE === 'post') {
+      transitionToPhase('metier');
+    }
+  }
+
+  function validatePhase(phase) {
+    var missing = [];
+    var groups = document.querySelectorAll('#formContent .form-group');
+
+    groups.forEach(function(group) {
+      var groupPhase = group.dataset.phase || 'pre';
+      if (groupPhase !== phase) return;
+      if (group.style.display === 'none') return;
+
+      var inputs = group.querySelectorAll('input, select, textarea');
+      inputs.forEach(function(input) {
+        if (input.disabled) return;
+        if (!input.required) return;
+
+        var isValid = true;
+
+        if (input.type === 'file') {
+          isValid = input.files && input.files.length > 0;
+        } else {
+          isValid = (input.value || '').toString().trim() !== '';
+        }
+
+        if (!isValid) {
+          var label = group.querySelector('label');
+          var fieldName = label ? label.textContent : input.name;
+          if (missing.indexOf(fieldName) === -1) missing.push(fieldName);
+        }
+      });
+    });
+
+    return { valid: missing.length === 0, missing: missing };
+  }
+
+  function lockIdentifiers(lock) {
+    var fields = ['machine_id', 'type_maintenance', 'site', 'date_intervention', 'selected_gamme_key'];
+
+    fields.forEach(function(name) {
+      var elements = document.getElementsByName(name);
+      if (elements) {
+        Array.from(elements).forEach(function(el) {
+          el.disabled = lock;
+        });
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // GESTION DES GAMMES
+  // ═══════════════════════════════════════════════════════════════
+
+  function setupGammeSelector() {
+    var typeEl = document.querySelector('[name="type_maintenance"]');
+
+    console.log('[DEBUG] Setting up gamme selector, typeEl exists:', !!typeEl);
+
+    if (typeEl) {
+      typeEl.addEventListener('change', function() {
+        var type = getFieldValue('type_maintenance') || '';
+        console.log('[DEBUG] Type maintenance changed to:', type);
+        if (type.toLowerCase() === 'preventif' || type.toLowerCase() === 'reglementaire') {
+          loadAvailableGammes();
+        } else {
+          removeGammeSelector();
+        }
+        updateVisibility();
+      });
+    } else {
+      console.log('[DEBUG] type_maintenance field not found, retrying in 500ms');
+      setTimeout(setupGammeSelector, 500);
+    }
+
+    var machineEl = document.querySelector('[name="machine_id"]');
+    if (machineEl) {
+      machineEl.addEventListener('change', function() {
+        var type = getFieldValue('type_maintenance') || '';
+        if (type.toLowerCase() === 'preventif' || type.toLowerCase() === 'reglementaire') {
+          loadAvailableGammes();
+        }
+      });
+    }
+  }
+
+  function loadAvailableGammes() {
+    var machineId = getFieldValue('machine_id');
+    console.log('[DEBUG] Loading gammes for machine:', machineId);
+
+    if (!machineId) {
+      console.log('[DEBUG] No machine selected, removing gamme selector');
+      removeGammeSelector();
+      return;
+    }
+
+    if (!window.google || !google.script) {
+      console.log('[DEBUG] Demo mode - using demo gammes');
+      AVAILABLE_GAMMES = [
+        { key: 'hebdo', label: 'Maintenance hebdomadaire', stepsCount: 5 },
+        { key: 'mensuel', label: 'Maintenance mensuelle', stepsCount: 10 }
+      ];
+      renderGammeSelector();
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(function(gammes) {
+        console.log('[DEBUG] Gammes received:', gammes);
+        AVAILABLE_GAMMES = Array.isArray(gammes) ? gammes : [];
+        renderGammeSelector();
+      })
+      .withFailureHandler(function(err) {
+        console.error('[DEBUG] Error loading gammes:', err);
+        showError('Erreur chargement gammes: ' + err.message);
+        AVAILABLE_GAMMES = [];
+        renderGammeSelector();
+      })
+      .getAvailableGammes(machineId);
+  }
+
+  function renderGammeSelector() {
+    console.log('[DEBUG] Rendering gamme selector, available gammes:', AVAILABLE_GAMMES);
+    removeGammeSelector();
+
+    if (AVAILABLE_GAMMES.length === 0) {
+      showError('Aucune gamme disponible pour cette machine');
+      return;
+    }
+
+    var typeGroup = document.querySelector('[name="type_maintenance"]');
+    if (!typeGroup) {
+      console.error('[DEBUG] type_maintenance field not found');
+      return;
+    }
+    typeGroup = typeGroup.closest('.form-group');
+    if (!typeGroup) {
+      console.error('[DEBUG] type_maintenance form-group not found');
+      return;
+    }
+
+    var container = document.createElement('div');
+    container.id = 'gamme_selector_container';
+    container.className = 'form-group';
+    container.dataset.phase = 'pre';
+
+    var label = document.createElement('label');
+    label.textContent = 'Gamme';
+    label.classList.add('required');
+    container.appendChild(label);
+
+    var select = document.createElement('select');
+    select.name = 'selected_gamme_key';
+    select.id = 'selected_gamme_key';
+    select.dataset.requiredOriginal = '1';
+    select.required = true;
+
+    var placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '-- Choisir une gamme --';
+    select.appendChild(placeholder);
+
+    AVAILABLE_GAMMES.forEach(function(gamme) {
+      var option = document.createElement('option');
+      option.value = gamme.key || gamme;
+      var labelText = gamme.label || gamme.key || gamme;
+      if (gamme.stepsCount) {
+        labelText += ' (' + gamme.stepsCount + ' etapes)';
+      }
+      option.textContent = labelText;
+      select.appendChild(option);
+    });
+
+    container.appendChild(select);
+    typeGroup.parentNode.insertBefore(container, typeGroup.nextSibling);
+
+    console.log('[DEBUG] Gamme selector rendered with', AVAILABLE_GAMMES.length, 'options');
+
+    updateVisibility();
+  }
+
+  function removeGammeSelector() {
+    var existing = document.getElementById('gamme_selector_container');
+    if (existing) {
+      console.log('[DEBUG] Removing existing gamme selector');
+      existing.remove();
+    }
+  }
+
+  function removeMetierContentIfNeeded() {
+    var type = getFieldValue('type_maintenance') || '';
+    type = type.toLowerCase();
+    if (type === 'preventif' || type === 'reglementaire') {
+      console.log('[FORM] Removing default metier content for preventif/reglementaire');
+      var metierBlocks = document.querySelectorAll('.form-block[data-generated-by="metier"]');
+      metierBlocks.forEach(function(block) {
+        block.remove();
+      });
+    }
+  }
+
+  function loadGammeSchema() {
+    var machineId = getFieldValue('machine_id');
+
+    if (!machineId || !SELECTED_GAMME_KEY) {
+      showError('Machine ou gamme non selectionnee');
+      return;
+    }
+
+    console.log('[FORM] Loading gamme schema:', {
+      machine: machineId,
+      gamme: SELECTED_GAMME_KEY
+    });
+
+    if (!window.google || !google.script) {
+      console.log('[FORM] Demo mode - using demo gamme schema');
+      GAMME_SCHEMA = {
+        fields: [
+          { name: 'gamme_step_1', label: 'Verification niveaux', type: 'select', options: ['OK', 'NOK'], gamme: SELECTED_GAMME_KEY, required: true },
+          { name: 'gamme_step_2', label: 'Controle visuel', type: 'select', options: ['OK', 'NOK'], gamme: SELECTED_GAMME_KEY, required: true }
+        ],
+        images: [],
+        title: 'Gamme ' + SELECTED_GAMME_KEY
+      };
+      
+      setTimeout(function() {
+        removeMetierContentIfNeeded();
+        injectGammeFields();
+        transitionToPhase('metier');
+      }, 100);
+      return;
+    }
+
+    showSuccess('Chargement de la gamme ' + SELECTED_GAMME_KEY + '...');
+
+    google.script.run
+      .withSuccessHandler(function(schema) {
+        console.log('[FORM] Gamme schema received:', schema);
+        
+        if (!schema || (!schema.fields || schema.fields.length === 0)) {
+          console.warn('[FORM] Empty gamme schema, using fallback');
+          GAMME_SCHEMA = {
+            fields: [
+              { name: 'gamme_note', label: 'Notes de la gamme', type: 'textarea', required: false, gamme: SELECTED_GAMME_KEY }
+            ],
+            images: schema.images || [],
+            title: schema.title || ('Gamme ' + SELECTED_GAMME_KEY)
+          };
+        } else {
+          GAMME_SCHEMA = schema;
+        }
+        
+        setTimeout(function() {
+          removeMetierContentIfNeeded();
+          injectGammeFields();
+          transitionToPhase('metier');
+        }, 100);
+      })
+      .withFailureHandler(function(err) {
+        console.error('[FORM] Error loading gamme schema:', err);
+        showError('Erreur chargement gamme: ' + err.message);
+        
+        GAMME_SCHEMA = {
+          fields: [
+            { name: 'gamme_note', label: 'Notes de la gamme', type: 'textarea', required: false, gamme: SELECTED_GAMME_KEY }
+          ],
+          images: [],
+          title: 'Gamme ' + SELECTED_GAMME_KEY
+        };
+        
+        setTimeout(function() {
+          removeMetierContentIfNeeded();
+          injectGammeFields();
+          transitionToPhase('metier');
+        }, 100);
+      })
+      .getGammeSchema(machineId, SELECTED_GAMME_KEY);
+  }
+
+  function injectGammeFields() {
+    if (!GAMME_SCHEMA || GAMME_INJECTED) {
+      console.log('[FORM] Gamme already injected or no schema');
+      return;
+    }
+
+    console.log('[FORM] Injecting gamme fields:', GAMME_SCHEMA);
+
+    var container = document.getElementById('formContent');
+    if (!container) {
+      console.error('[FORM] formContent container not found');
+      return;
+    }
+
+    var fields = GAMME_SCHEMA.fields || [];
+    var images = GAMME_SCHEMA.images || [];
+
+    if (fields.length === 0 && images.length === 0) {
+      console.warn('[FORM] No fields or images in gamme schema');
+      GAMME_INJECTED = true;
+      return;
+    }
+
+    var gammeSection = document.createElement('div');
+    gammeSection.className = 'form-block';
+    gammeSection.dataset.phase = 'metier';
+    gammeSection.dataset.generatedBy = 'gamme';
+
+    var title = document.createElement('h2');
+    title.textContent = GAMME_SCHEMA.title || 'Gamme';
+    gammeSection.appendChild(title);
+
+    if (images.length > 0) {
+      var imagesContainer = document.createElement('div');
+      imagesContainer.className = 'gamme-images-container';
+      
+      var imagesTitle = document.createElement('h3');
+      imagesTitle.textContent = 'Images de reference';
+      imagesContainer.appendChild(imagesTitle);
+      
+      images.forEach(function(image) {
+        if (image && image.drive_id) {
+          var imgWrapper = document.createElement('div');
+          imgWrapper.className = 'gamme-image-wrapper';
+          
+          var img = document.createElement('img');
+          img.src = 'https://drive.google.com/uc?id=' + image.drive_id;
+          img.alt = image.caption || image.filename || 'Image de gamme';
+          img.title = image.caption || '';
+          
+          imgWrapper.appendChild(img);
+          imagesContainer.appendChild(imgWrapper);
+        }
+      });
+      
+      gammeSection.appendChild(imagesContainer);
+    }
+
+    fields.forEach(function(field) {
+      var group = createFieldElement(field);
+      group.dataset.phase = 'metier';
+      gammeSection.appendChild(group);
+    });
+
+    container.appendChild(gammeSection);
+    GAMME_INJECTED = true;
+
+    console.log('[FORM] Gamme fields injected successfully');
+
+    updateVisibility();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // GESTION DES PIÈCES
+  // ═══════════════════════════════════════════════════════════════
+
+  function addPiece() {
+    pieceCounter++;
+
+    var container = document.getElementById('piecesContainer');
+    if (!container) return;
+
+    var item = document.createElement('div');
+    item.className = 'piece-item';
+
+    var header = document.createElement('div');
+    header.className = 'piece-header';
+    header.textContent = 'Piece ' + pieceCounter;
+    item.appendChild(header);
+
+    var removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'remove-piece';
+    removeBtn.textContent = 'X';
+    removeBtn.addEventListener('click', function() {
+      item.remove();
+    });
+    item.appendChild(removeBtn);
+
+    var fields = [
+      { name: 'piece_id', label: 'ID Piece', type: 'text', required: true, default: 'PIECE-' + Date.now() },
+      { name: 'reference', label: 'Reference', type: 'text', required: true },
+      { name: 'designation', label: 'Designation', type: 'text', required: true },
+      { name: 'quantite', label: 'Quantite', type: 'number', required: true, default: 1 }
+    ];
+
+    var grid = document.createElement('div');
+    grid.className = 'piece-grid';
+
+    fields.forEach(function(f) {
+      var group = document.createElement('div');
+      group.className = 'form-group';
+
+      var label = document.createElement('label');
+      label.textContent = f.label;
+      if (f.required) label.classList.add('required');
+      group.appendChild(label);
+
+      var input = document.createElement('input');
+      input.type = f.type;
+      input.name = 'pieces[' + pieceCounter + '][' + f.name + ']';
+      input.value = f.default || '';
+
+      input.dataset.requiredOriginal = f.required ? '1' : '0';
+      if (f.required) input.required = true;
+
+      group.appendChild(input);
+      grid.appendChild(group);
+    });
+
+    item.appendChild(grid);
+    container.appendChild(item);
+
+    updateVisibility();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SOUMISSION FINALE
+  // ═══════════════════════════════════════════════════════════════
+
+  function performFinalSubmit() {
+    if (isSubmitting) return;
+    isSubmitting = true;
+
+    var submitBtn = document.getElementById('submitBtn');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Enregistrement...';
+    }
+
+    var payload = serializeForm();
+
+    console.log('[FORM] Submitting intervention:', payload);
+
+    if (!window.google || !google.script) {
+      console.log('[FORM] Demo mode - simulating submission');
+      setTimeout(function() {
+        showSuccess('Intervention enregistree (mode demo)');
+        isSubmitting = false;
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Enregistrer intervention';
+        }
+        setTimeout(clearForm, 2000);
+      }, 1500);
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        console.log('[FORM] Submission result:', result);
+        
+        if (result && result.success) {
+          showSuccess(result.message || 'Intervention enregistree');
+          if (result.clearForm) {
+            setTimeout(clearForm, 2000);
+          }
+        }
+        isSubmitting = false;
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Enregistrer intervention';
+        }
+      })
+      .withFailureHandler(function(err) {
+        console.error('[FORM] Submission error:', err);
+        showError('Erreur: ' + err.message);
+        isSubmitting = false;
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Enregistrer intervention';
+        }
+      })
+      .submitIntervention(payload);
+  }
+
+  function serializeForm() {
+    var form = document.getElementById('interventionForm');
+
+    var lockedFields = ['machine_id', 'site', 'type_maintenance', 'date_intervention', 'selected_gamme_key'];
+    var previousStates = {};
+
+    lockedFields.forEach(function(fieldName) {
+      var field = form.querySelector('[name="' + fieldName + '"]');
+      if (field && field.disabled) {
+        previousStates[fieldName] = true;
+        field.disabled = false;
+      }
+    });
+
+    var formData = new FormData(form);
+
+    Object.keys(previousStates).forEach(function(fieldName) {
+      var field = form.querySelector('[name="' + fieldName + '"]');
+      if (field) field.disabled = true;
+    });
+
+    var payload = {
+      common: {},
+      specific: {},
+      pieces: [],
+      gamme_key: SELECTED_GAMME_KEY
+    };
+
+    var piecesTemp = {};
+    var entries = [];
+    formData.forEach(function(value, name) {
+      entries.push([name, value]);
+    });
+
+    for (var i = 0; i < entries.length; i++) {
+      var name = entries[i][0];
+      var value = entries[i][1];
+
+      if (value instanceof File) continue;
+
+      var pieceMatch = name.match(/^pieces\[(\d+)\]\[([^\]]+)\]$/);
+      if (pieceMatch) {
+        var idx = pieceMatch[1];
+        var key = pieceMatch[2];
+        if (!piecesTemp[idx]) piecesTemp[idx] = {};
+        piecesTemp[idx][key] = value;
+        continue;
+      }
+
+      if (name.indexOf('gamme_') === 0) {
+        payload.specific[name] = value;
+        continue;
+      }
+
+      payload.common[name] = value;
+    }
+
+    payload.common.machine_id = payload.common.machine_id || (getFieldValue('machine_id') || '');
+    payload.common.site = payload.common.site || (getFieldValue('site') || '');
+    payload.common.type_maintenance = payload.common.type_maintenance || (getFieldValue('type_maintenance') || '');
+    payload.common.date_intervention = payload.common.date_intervention || (getFieldValue('date_intervention') || '');
+
+    if (SELECTED_GAMME_KEY) {
+      payload.gamme_key = SELECTED_GAMME_KEY;
+      payload.common.selected_gamme_key = SELECTED_GAMME_KEY;
+    }
+
+    payload.pieces = Object.values(piecesTemp).filter(function(p) {
+      return p && p.piece_id;
+    });
+
+    var machineId = payload.common.machine_id || '';
+    payload.pieces.forEach(function(piece) {
+      if (!piece.machine_id) piece.machine_id = machineId;
+    });
+
+    return payload;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // UTILITAIRES
+  // ═══════════════════════════════════════════════════════════════
+
+  function applyPrefill(prefill) {
+    if (!prefill) return;
+
+    if (prefill.machine) {
+      var machineEl = document.querySelector('[name="machine_id"]');
+      if (machineEl) {
+        machineEl.value = prefill.machine;
+        machineEl.dispatchEvent(new Event('change'));
+      }
+    }
+
+    if (prefill.type) {
+      var typeEl = document.querySelector('[name="type_maintenance"]');
+      if (typeEl) {
+        typeEl.value = prefill.type;
+        typeEl.dispatchEvent(new Event('change'));
+      }
+    }
+
+    if (prefill.gamme) {
+      SELECTED_GAMME_KEY = prefill.gamme;
+    }
+
+    if (prefill.site) {
+      setTimeout(function() {
+        var siteEl = document.querySelector('[name="site"]');
+        if (siteEl) {
+          siteEl.value = prefill.site;
+          siteEl.dispatchEvent(new Event('change'));
+        }
+      }, 300);
+    }
+
+    updateVisibility();
+  }
+
+  function attachChangeListeners() {
+    var inputs = document.querySelectorAll('#formContent input, #formContent select, #formContent textarea');
+    inputs.forEach(function(input) {
+      input.addEventListener('change', updateVisibility);
+    });
+  }
+
+  function clearForm() {
+    console.log('[FORM] Clearing form');
+
+    var form = document.getElementById('interventionForm');
+    if (form) form.reset();
+
+    var piecesContainer = document.getElementById('piecesContainer');
+    if (piecesContainer) piecesContainer.innerHTML = '';
+
+    var gammeBlocks = document.querySelectorAll('[data-generated-by="gamme"]');
+    gammeBlocks.forEach(function(block) { block.remove(); });
+
+    pieceCounter = 0;
+    CURRENT_PHASE = 'pre';
+    GAMME_INJECTED = false;
+    GAMME_SCHEMA = null;
+    SELECTED_GAMME_KEY = '';
+    AVAILABLE_GAMMES = [];
+
+    lockIdentifiers(false);
+    removeGammeSelector();
+    updateVisibility();
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function showError(msg) {
+    var errorDiv = document.getElementById('errorMessage');
+    var successDiv = document.getElementById('successMessage');
+
+    if (successDiv) successDiv.style.display = 'none';
+
+    if (errorDiv) {
+      errorDiv.textContent = msg;
+      errorDiv.style.display = 'block';
+
+      setTimeout(function() {
+        errorDiv.style.display = 'none';
+      }, 8000);
+    }
+
+    console.error('[FORM]', msg);
+  }
+
+  function showSuccess(msg) {
+    var successDiv = document.getElementById('successMessage');
+    var errorDiv = document.getElementById('errorMessage');
+
+    if (errorDiv) errorDiv.style.display = 'none';
+
+    if (successDiv) {
+      successDiv.textContent = msg;
+      successDiv.style.display = 'block';
+
+      setTimeout(function() {
+        successDiv.style.display = 'none';
+      }, 5000);
+    }
+
+    console.log('[FORM]', msg);
+  }
+
+  console.log('[FORM] ARMITEC Form v5.4.3 loaded successfully');
+})();
+</script>
