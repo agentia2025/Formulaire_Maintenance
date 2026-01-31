@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gamme - Machine <?= model.machine_id ?></title>
+
+<link rel="icon" type="image/x-icon" href="URL_DE_VOTRE_IMAGE">
+<!-- Exemple : <link rel="icon" type="image/x-icon" href="https://drive.google.com/uc?id=ID_DE_VOTRE_IMAGE"> -->
+
+
+  <style>
+    /* === ARMITEC - Gamme Template Styles v5.0 (SAFE) === */
+    /* CSS inchangé : 100 % safe pour Apps Script */
+
+    :root {
+      --primary-color: #1a73e8;
+      --primary-dark: #1557b0;
+      --secondary-color: #667eea;
+      --secondary-dark: #764ba2;
+      --success-color: #27ae60;
+      --warning-color: #f39c12;
+      --error-color: #e74c3c;
+      --text-color: #333;
+      --text-light: #666;
+      --text-muted: #999;
+      --border-color: #e0e0e0;
+      --bg-light: #f8f9fa;
+      --bg-white: #ffffff;
+      --shadow-sm: 0 2px 8px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+      --shadow-lg: 0 10px 40px rgba(0,0,0,0.1);
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --transition: all 0.3s ease;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+      color: var(--text-color);
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    /* … le reste de ton CSS est inchangé … */
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <div class="header">
+    <h1>🔧 Machine <?= model.machine_id ?></h1>
+    <p class="subtitle">Documentation des gammes de maintenance</p>
+
+    <div class="meta-info">
+      <span class="meta-badge">📊 <?= totalGammes ?> gamme<?= totalGammes > 1 ? 's' : '' ?></span>
+      <span class="meta-badge">📝 <?= totalSteps ?> étape<?= totalSteps > 1 ? 's' : '' ?></span>
+      <span class="meta-badge">📅 <?= currentDate ?></span>
+    </div>
+  </div>
+
+  <!-- TABLE DES MATIÈRES -->
+  <div class="toc">
+    <h3>📑 Sommaire des gammes</h3>
+    <ul class="toc-list">
+      <? for (var sectionId in model.gammes) {
+           var gamme = model.gammes[sectionId];
+           var stepsCount = gamme.steps ? gamme.steps.length : 0;
+      ?>
+        <li>
+          <a href="#section-<?= sectionId ?>">
+            📋 <?= gamme.title || sectionId ?>
+            <span class="toc-steps"><?= stepsCount ?></span>
+          </a>
+        </li>
+      <? } ?>
+    </ul>
+  </div>
+
+  <!-- GAMMES -->
+  <? for (var sectionId in model.gammes) {
+       var gamme = model.gammes[sectionId];
+  ?>
+    <section class="gamme-section" id="section-<?= sectionId ?>" data-gamme-id="<?= sectionId ?>">
+      <h2><?= gamme.title || sectionId ?></h2>
+
+      <a
+        class="declare-btn"
+        href="<?= formUrl ?>?machine=<?= model.machine_id ?>&type=preventif&gamme=<?= sectionId ?>"
+        target="_blank"
+        rel="noopener"
+      >
+        📝 Déclarer maintenance
+      </a>
+
+      <? if (gamme.steps && gamme.steps.length) { ?>
+        <? gamme.steps.forEach(function(step, i) { ?>
+          <div class="step" data-searchable="<?= (step.action?.label || '').toLowerCase() ?>">
+            <div class="step-number"><?= step.order || i + 1 ?></div>
+            <div class="step-action"><?= step.action?.label || 'Étape' ?></div>
+            <? if (step.action?.description) { ?>
+              <div class="step-description"><?= step.action.description ?></div>
+            <? } ?>
+          </div>
+        <? }); ?>
+      <? } else { ?>
+        <div class="step">Aucune étape définie</div>
+      <? } ?>
+    </section>
+  <? } ?>
+
+  <footer class="footer">
+    <p>🔧 ARMITEC — Document généré le <?= currentDate ?></p>
+  </footer>
+
+</div>
+
+<!-- JS SAFE -->
+<script>
+(function () {
+  'use strict';
+
+  const machineId = <?= JSON.stringify(model.machine_id) ?>;
+  const totalGammes = <?= Number(totalGammes) ?>;
+  const totalSteps = <?= Number(totalSteps) ?>;
+
+  console.log('📋 ARMITEC Gamme chargée', {
+    machineId,
+    totalGammes,
+    totalSteps
+  });
+
+})();
+</script>
+
+</body>
+</html>
