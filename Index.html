@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ARMITEC - Declaration Intervention</title>
+
+  <?!= include('styles') ?>
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="header-content">
+      <div class="logo">
+        <span class="logo-icon">🔧</span>
+        <span class="logo-text">ARMITEC</span>
+      </div>
+      <h1>Declaration d'Intervention</h1>
+      <div class="header-subtitle">Systeme de Gestion de Maintenance Industrielle</div>
+    </div>
+  </header>
+
+  <div class="phase-indicator">
+    <div class="phase-step" id="phase-pre">
+      <div class="phase-number">1</div>
+      <div class="phase-label">Identification</div>
+    </div>
+    <div class="phase-connector"></div>
+    <div class="phase-step" id="phase-metier">
+      <div class="phase-number">2</div>
+      <div class="phase-label">Intervention</div>
+    </div>
+    <div class="phase-connector"></div>
+    <div class="phase-step" id="phase-post">
+      <div class="phase-number">3</div>
+      <div class="phase-label">Cloture</div>
+    </div>
+  </div>
+
+  <div id="errorMessage" class="message error-message" style="display: none;"></div>
+  <div id="successMessage" class="message success-message" style="display: none;"></div>
+
+  <div class="container">
+    <form id="interventionForm" class="intervention-form">
+      <div id="formContent"></div>
+
+      <div id="piecesBlock" class="form-block" style="display: none;">
+        <h2>Pieces Detachees</h2>
+        <p class="hint">Ajoutez les pieces detectees ou remplacees lors de l'intervention</p>
+
+        <div id="piecesContainer"></div>
+
+        <button type="button" id="addPieceBtn" class="btn btn-secondary">
+          Ajouter une piece
+        </button>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" id="backBtn" class="btn btn-outline" style="display: none;">
+          Retour
+        </button>
+        <button type="submit" id="submitBtn" class="btn btn-primary">
+          Continuer
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <footer class="app-footer">
+    <p>2024 ARMITEC - Systeme de Gestion de Maintenance Industrielle v5.4.0</p>
+  </footer>
+
+  <script>
+    console.log('[INIT] Starting ARMITEC v5.4.1 - FIX ReferenceError');
+
+    // Configuration initiale
+    window.PREFILL_DATA = {
+      machine: '',
+      type: '',
+      gamme: '',
+      site: ''
+    };
+
+    console.log('[INIT] PREFILL_DATA loaded:', window.PREFILL_DATA);
+  </script>
+
+  <!-- ✅ CORRECTION: Dynamic lists manager (SITE -> MACHINES) -->
+  <script>
+    console.log('[INIT] Loading dynamic lists manager v5.4.1');
+
+    (function() {
+      'use strict';
+
+      var machinesData = [];
+      var sitesData = [];
+      var machinesBySite = {};
+
+      window.initIdentificationDynamicLists = function() {
+        console.log('[LISTS] Initializing dynamic lists (site -> machines)');
+
+        if (!window.google || !google.script) {
+          console.warn('[LISTS] Demo mode - using fallback data');
+          populateWithDemoData();
+          return;
+        }
+
+        try {
+          google.script.run
+            .withSuccessHandler(function(data) {
+              console.log('[LISTS] Data received from server:', data);
+
+              if (!data) {
+                console.error('[LISTS] No data received, using demo data');
+                populateWithDemoData();
+                return;
+              }
+
+              machinesData = Array.isArray(data.machines) ? data.machines : [];
+              sitesData = Array.isArray(data.sites) ? data.sites : [];
+
+              // ✅ CORRECTION: Vérification et construction sécurisée de machinesBySite
+              if (data.machinesBySite && typeof data.machinesBySite === 'object') {
+                machinesBySite = data.machinesBySite;
+              } else if (machinesData.length > 0) {
+                machinesBySite = buildMachinesBySite(machinesData);
+              } else {
+                machinesBySite = {};
+              }
+
+              console.log('[LISTS] Processed data:', {
+                machinesCount: machinesData.length,
+                sitesCount: sitesData.length,
+                machinesBySiteKeys: Object.keys(machinesBySite)
+              });
+
+              populateSitesList();
+              resetMachinesList();
+              attachDynamicListeners();
+              applyPrefillValues();
+            })
+            .withFailureHandler(function(err) {
+              console.error('[LISTS] Server error:', err);
+              populateWithDemoData();
+            })
+            .getMachinesAndSites();
+        } catch (error) {
+          console.error('[LISTS] Exception in initIdentificationDynamicLists:', error);
+          populateWithDemoData();
+        }
+      };
+
+      function populateSitesList() {
+        var select = document.querySelector('[name="site"]');
+        if (!select) {
+          console.warn('[LISTS] Site select not found');
+          return;
+        }
+
+        select.innerHTML = '<option value="">-- Selectionner un site --</option>';
+
+        if (!Array.isArray(sitesData)) {
+          console.error('[LISTS] sitesData is not an array');
+          return;
+        }
+
+        sitesData.forEach(function(site) {
+          var option = document.createElement('option');
+          option.value = String(site || '');
+          option.textContent = String(site || '');
+          select.appendChild(option);
+        });
+
+        console.log('[LISTS] Sites populated:', sitesData.length);
+      }
+
+      function resetMachinesList() {
+        var select = document.querySelector('[name="machine_id"]');
+        if (!select) {
+          console.warn('[LISTS] Machine select not found');
+          return;
+        }
+
+        select.innerHTML = '<option value="">-- Choisir d\'abord un site --</option>';
+        select.disabled = true;
+
+        console.log('[LISTS] Machines reset (waiting for site selection)');
+      }
+
+      function populateMachinesForSite(siteName) {
+        var select = document.querySelector('[name="machine_id"]');
+        if (!select) {
+          console.warn('[LISTS] Machine select not found');
+          return;
+        }
+
+        siteName = String(siteName || '').trim();
+
+        if (!siteName) {
+          resetMachinesList();
+          return;
+        }
+
+        // ✅ CORRECTION: Vérification sécurisée de machinesBySite
+        var allowedMachines = [];
+        if (machinesBySite && typeof machinesBySite === 'object' && Array.isArray(machinesBySite[siteName])) {
+          allowedMachines = machinesBySite[siteName];
+        }
+
+        select.innerHTML = '<option value="">-- Selectionner une machine --</option>';
+
+        allowedMachines.forEach(function(machine) {
+          if (!machine) return;
+          
+          var option = document.createElement('option');
+          var machineId = machine.id || machine.value || '';
+          var machineLabel = machine.label || machine.id || machineId;
+          
+          option.value = String(machineId);
+          option.textContent = String(machineLabel);
+          select.appendChild(option);
+        });
+
+        select.disabled = (allowedMachines.length === 0);
+
+        console.log('[LISTS] Machines populated for site "' + siteName + '":', allowedMachines.length);
+      }
+
+      function attachDynamicListeners() {
+        var siteSelect = document.querySelector('[name="site"]');
+        var machineSelect = document.querySelector('[name="machine_id"]');
+
+        if (siteSelect) {
+          siteSelect.addEventListener('change', function() {
+            var selectedSite = this.value;
+            console.log('[LISTS] Site selected:', selectedSite);
+
+            if (machineSelect) {
+              machineSelect.value = '';
+            }
+
+            populateMachinesForSite(selectedSite);
+          });
+        }
+
+        if (machineSelect) {
+          machineSelect.addEventListener('change', function() {
+            console.log('[LISTS] Machine selected:', this.value);
+          });
+        }
+      }
+
+      function applyPrefillValues() {
+        if (!window.PREFILL_DATA) return;
+
+        var siteSelect = document.querySelector('[name="site"]');
+        var machineSelect = document.querySelector('[name="machine_id"]');
+
+        // Pré-remplissage: site d'abord
+        if (window.PREFILL_DATA.site && siteSelect) {
+          siteSelect.value = window.PREFILL_DATA.site;
+          siteSelect.dispatchEvent(new Event('change'));
+          console.log('[LISTS] Prefill site:', window.PREFILL_DATA.site);
+        }
+
+        // Ensuite machine, avec délai
+        setTimeout(function() {
+          if (window.PREFILL_DATA.machine && machineSelect) {
+            machineSelect.value = window.PREFILL_DATA.machine;
+            machineSelect.dispatchEvent(new Event('change'));
+            console.log('[LISTS] Prefill machine:', window.PREFILL_DATA.machine);
+          }
+        }, 200);
+      }
+
+      // ✅ CORRECTION: Construction sécurisée de machinesBySite
+      function buildMachinesBySite(machines) {
+        var map = {};
+        
+        if (!Array.isArray(machines)) {
+          console.error('[LISTS] buildMachinesBySite: machines is not an array');
+          return map;
+        }
+
+        machines.forEach(function(machine) {
+          if (!machine) return;
+
+          var zones = Array.isArray(machine.zones) ? machine.zones : [];
+          var machineId = String(machine.id || '');
+          var machineLabel = String(machine.label || machine.id || machineId);
+          var machineType = String(machine.type || '');
+
+          zones.forEach(function(site) {
+            if (!site) return;
+
+            var siteKey = String(site);
+            if (!map[siteKey]) {
+              map[siteKey] = [];
+            }
+
+            map[siteKey].push({
+              id: machineId,
+              label: machineLabel,
+              type: machineType
+            });
+          });
+        });
+
+        // Tri par id
+        Object.keys(map).forEach(function(site) {
+          if (Array.isArray(map[site])) {
+            map[site].sort(function(a, b) {
+              return String(a.id || '').localeCompare(String(b.id || ''));
+            });
+          }
+        });
+
+        console.log('[LISTS] machinesBySite built:', Object.keys(map).length, 'sites');
+        return map;
+      }
+
+      function populateWithDemoData() {
+        console.log('[LISTS] Loading demo/fallback data');
+
+        machinesData = [
+          { id: 'M001', label: 'M001 - Tour CNC 1', type: 'Tour', zones: ['Atelier A'] },
+          { id: 'M002', label: 'M002 - Fraiseuse DMU', type: 'Fraiseuse', zones: ['Atelier A'] },
+          { id: 'M006', label: 'M006 - Centre usinage', type: 'Centre', zones: ['Atelier B'] },
+          { id: 'M064', label: 'M064 - Machine exemple', type: 'Exemple', zones: ['Atelier A'] },
+          { id: 'M075', label: 'M075 - Imprimante 3D', type: '3D', zones: ['Lidec'] }
+        ];
+
+        sitesData = ['Atelier A', 'Atelier B', 'Lidec'];
+        machinesBySite = buildMachinesBySite(machinesData);
+
+        populateSitesList();
+        resetMachinesList();
+        attachDynamicListeners();
+        applyPrefillValues();
+      }
+
+    })();
+
+    console.log('[INIT] Dynamic lists manager loaded (v5.4.1 - FIXED)');
+  </script>
+
+  <!-- Chargement du script principal du formulaire -->
+  <?!= include('form_js') ?>
+
+</body>
+</html>
